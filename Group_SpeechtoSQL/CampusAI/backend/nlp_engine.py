@@ -168,11 +168,24 @@ class NLPEngine:
         return None
 
     def _extract_attendance_condition(self, query: str) -> Optional[Dict[str, Any]]:
-        m = re.search(r"(?:attendance\s*)?(?:below|less than|under|<|<=)\s*(\d+(?:\.\d+)?)\s*%?", query)
+        # Do not treat amounts (scholarship, fee, stipend) as attendance
+        if any(k in query for k in ["scholarship", "fee", "fees", "stipend", "salary"]):
+            return None
+
+        # Require percentage sign or explicit attendance keywords
+        m = re.search(r"(?:attendance\s*(?:percentage|percent)?\s*)?(?:below|less than|under|<|<=)\s*(\d+(?:\.\d+)?)\s*%", query)
         if m:
             return {"operator": "<", "value": float(m.group(1))}
 
-        m = re.search(r"(?:attendance\s*)?(?:above|greater than|more than|>|>=)\s*(\d+(?:\.\d+)?)\s*%?", query)
+        m = re.search(r"(?:attendance\s*(?:percentage|percent)?\s*)?(?:above|greater than|more than|>|>=)\s*(\d+(?:\.\d+)?)\s*%", query)
+        if m:
+            return {"operator": ">", "value": float(m.group(1))}
+
+        m = re.search(r"(?:attendance\s*(?:percentage|percent)?\s*)(?:below|less than|under|<|<=)\s*(\d+(?:\.\d+)?)", query)
+        if m:
+            return {"operator": "<", "value": float(m.group(1))}
+
+        m = re.search(r"(?:attendance\s*(?:percentage|percent)?\s*)(?:above|greater than|more than|>|>=)\s*(\d+(?:\.\d+)?)", query)
         if m:
             return {"operator": ">", "value": float(m.group(1))}
 
@@ -251,16 +264,67 @@ class NLPEngine:
 
         # 4. Scholarship queries
         if any(k in query for k in ["scholarship", "scholarships", "financial aid", "grant"]):
+            # If the student specifically asks for their own applied / awarded scholarships:
+            if any(k in query for k in ["my scholarship", "my applied", "applied scholarship", "my application", "my status", "awarded to me", "my grant"]):
+                return f"""
+                    SELECT sc.scholarship_name, sc.provider, sc.amount, sc.course, sc.eligibility_status, sc.application_status
+                    FROM scholarships sc
+                    WHERE sc.student_id = {student_id}
+                """.strip()
+
+            # Otherwise, student is querying available scholarships (institutional opportunities catalog)
+            where_clauses = [f"(sc.student_id = {student_id} OR sc.student_id IS NULL)"]
+
+            if "mca" in query:
+                where_clauses.append("(sc.course LIKE '%MCA%' OR sc.scholarship_name LIKE '%MCA%' OR sc.description LIKE '%MCA%')")
+            elif any(k in query for k in ["btech", "b.tech", "cse", "computer"]):
+                where_clauses.append("(sc.course LIKE '%B.Tech%' OR sc.course LIKE '%CSE%' OR sc.description LIKE '%Computer%')")
+
+            if "aicte" in query:
+                where_clauses.append("sc.provider LIKE '%AICTE%'")
+            if any(k in query for k in ["maharashtra", "mahadbt"]):
+                where_clauses.append("(sc.provider LIKE '%Maharashtra%' OR sc.scholarship_name LIKE '%MahaDBT%' OR sc.scholarship_name LIKE '%Maharashtra%')")
+            if "eligible" in query:
+                where_clauses.append("sc.eligibility_status = 'Eligible'")
+
+            range_match = re.search(
+                r'(?:between|from|range)?\s*(?:rs\.?|₹)?\s*(\d+(?:,\d+)?|\d+k)\s*(?:and|to|-)\s*(?:rs\.?|₹)?\s*(\d+(?:,\d+)?|\d+k)',
+                query.lower()
+            )
+            if range_match and any(w in query.lower() for w in ["between", "from", "to", "and", "-"]):
+                v1 = float(range_match.group(1).replace(",", "").replace("k", "000"))
+                v2 = float(range_match.group(2).replace(",", "").replace("k", "000"))
+                min_v, max_v = min(v1, v2), max(v1, v2)
+                where_clauses.append(f"sc.amount BETWEEN {min_v} AND {max_v}")
+            else:
+                amt_gte = re.search(r'(?:>=|at least|min|minimum)\s*(?:rs\.?|₹)?\s*(\d+)', query.lower())
+                amt_gt = re.search(r'(?:above|greater than|more than|exceeding|higher than|>)\s*(?:rs\.?|₹)?\s*(\d+)', query.lower())
+                amt_lte = re.search(r'(?:<=|at most|max|maximum)\s*(?:rs\.?|₹)?\s*(\d+)', query.lower())
+                amt_lt = re.search(r'(?:below|less than|under|<)\s*(?:rs\.?|₹)?\s*(\d+)', query.lower())
+
+                if amt_gte:
+                    where_clauses.append(f"sc.amount >= {float(amt_gte.group(1))}")
+                elif amt_gt:
+                    where_clauses.append(f"sc.amount > {float(amt_gt.group(1))}")
+
+                if amt_lte:
+                    where_clauses.append(f"sc.amount <= {float(amt_lte.group(1))}")
+                elif amt_lt:
+                    where_clauses.append(f"sc.amount < {float(amt_lt.group(1))}")
+
             return f"""
-                SELECT sc.scholarship_name, sc.provider, sc.amount, sc.eligibility_status, sc.application_status
+                SELECT sc.scholarship_name, sc.provider, sc.amount, sc.course,
+                       sc.min_cgpa, sc.deadline, sc.eligibility_status, sc.application_status
                 FROM scholarships sc
-                WHERE sc.student_id = {student_id}
+                WHERE {' AND '.join(where_clauses)}
+                ORDER BY sc.amount DESC
+                LIMIT 25
             """.strip()
 
         # 5. Internship listings (general public information permitted for students)
         if any(k in query for k in ["internship", "internships", "placement", "hiring", "company"]):
             return """
-                SELECT title, company_name, stipend, location, duration, eligibility
+                SELECT role, domain, company_name, stipend, location, duration, skills_required, eligibility
                 FROM internships
                 ORDER BY stipend DESC
                 LIMIT 20
@@ -365,36 +429,65 @@ class NLPEngine:
 
         # Internships
         if any(k in query for k in ["internship", "internships", "stipend", "placement", "hiring"]):
-            if "top" in query or "highest" in query:
-                return f"""
-                    SELECT title, company_name, stipend, location, duration, eligibility
-                    FROM internships
-                    ORDER BY stipend DESC
-                    LIMIT {limit}
-                """
-            return """
-                SELECT title, company_name, stipend, location, duration, eligibility
+            amt_match = re.search(r'(?:above|greater than|more than|>|>=)\s*(\d+)', query)
+            where_clause = f"WHERE stipend >= {float(amt_match.group(1))}" if amt_match else ""
+            return f"""
+                SELECT role, domain, company_name, stipend, location, duration, skills_required, eligibility
                 FROM internships
+                {where_clause}
                 ORDER BY stipend DESC
+                LIMIT {limit}
             """
 
         # Scholarships
-        if "scholarship" in query and not att_cond and not cgpa_cond:
+        if any(k in query for k in ["scholarship", "scholarships"]):
             where_clauses = []
             if dept_name:
-                where_clauses.append(f"d.department_name = '{dept_name}'")
+                where_clauses.append(f"(d.department_name = '{dept_name}' OR sc.department = '{dept_name}' OR sc.course LIKE '%{dept_name}%')")
+            if "mca" in query:
+                where_clauses.append("(sc.course LIKE '%MCA%' OR sc.scholarship_name LIKE '%MCA%' OR sc.description LIKE '%MCA%')")
+            if "aicte" in query:
+                where_clauses.append("sc.provider LIKE '%AICTE%'")
+            if any(k in query for k in ["maharashtra", "mahadbt"]):
+                where_clauses.append("(sc.provider LIKE '%Maharashtra%' OR sc.scholarship_name LIKE '%MahaDBT%' OR sc.scholarship_name LIKE '%Maharashtra%')")
             if "eligible" in query:
                 where_clauses.append("sc.eligibility_status = 'Eligible'")
             if "approved" in query:
                 where_clauses.append("sc.application_status = 'Approved'")
 
+            range_match = re.search(
+                r'(?:between|from|range)?\s*(?:rs\.?|₹)?\s*(\d+(?:,\d+)?|\d+k)\s*(?:and|to|-)\s*(?:rs\.?|₹)?\s*(\d+(?:,\d+)?|\d+k)',
+                query.lower()
+            )
+            if range_match and any(w in query.lower() for w in ["between", "from", "to", "and", "-"]):
+                v1 = float(range_match.group(1).replace(",", "").replace("k", "000"))
+                v2 = float(range_match.group(2).replace(",", "").replace("k", "000"))
+                min_v, max_v = min(v1, v2), max(v1, v2)
+                where_clauses.append(f"sc.amount BETWEEN {min_v} AND {max_v}")
+            else:
+                amt_gte = re.search(r'(?:>=|at least|min|minimum)\s*(?:rs\.?|₹)?\s*(\d+)', query.lower())
+                amt_gt = re.search(r'(?:above|greater than|more than|exceeding|higher than|>)\s*(?:rs\.?|₹)?\s*(\d+)', query.lower())
+                amt_lte = re.search(r'(?:<=|at most|max|maximum)\s*(?:rs\.?|₹)?\s*(\d+)', query.lower())
+                amt_lt = re.search(r'(?:below|less than|under|<)\s*(?:rs\.?|₹)?\s*(\d+)', query.lower())
+
+                if amt_gte:
+                    where_clauses.append(f"sc.amount >= {float(amt_gte.group(1))}")
+                elif amt_gt:
+                    where_clauses.append(f"sc.amount > {float(amt_gt.group(1))}")
+
+                if amt_lte:
+                    where_clauses.append(f"sc.amount <= {float(amt_lte.group(1))}")
+                elif amt_lt:
+                    where_clauses.append(f"sc.amount < {float(amt_lt.group(1))}")
+
             where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
             return f"""
-                SELECT s.name, s.roll_number, d.department_name, sc.scholarship_name,
-                       sc.provider, sc.amount, sc.eligibility_status, sc.application_status
+                SELECT sc.scholarship_name, sc.provider, sc.amount, sc.course,
+                       sc.min_cgpa, sc.deadline, sc.eligibility_status, sc.application_status,
+                       COALESCE(s.name, 'Open / All Students') AS student_name
                 FROM scholarships sc
-                JOIN students s ON sc.student_id = s.student_id
-                JOIN departments d ON s.department_id = d.department_id
+                LEFT JOIN students s ON sc.student_id = s.student_id
+                LEFT JOIN departments d ON s.department_id = d.department_id
                 {where_str}
                 ORDER BY sc.amount DESC
                 LIMIT {limit}

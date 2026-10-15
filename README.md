@@ -1,2 +1,0 @@
-# mca-2026-2027BATCH-PROJECT-PROTOTYPE-OCT2026
-MCOE-MCA Department for Students projects FOR PROTOTYPE 

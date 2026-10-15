@@ -167,12 +167,18 @@ class Scholarship(Base):
     __tablename__ = 'scholarships'
 
     scholarship_id = Column(Integer, primary_key=True, autoincrement=True)
-    student_id = Column(Integer, ForeignKey('students.student_id'))
+    student_id = Column(Integer, ForeignKey('students.student_id'), nullable=True)
     scholarship_name = Column(String(100))
     provider = Column(String(100))
     amount = Column(Float)
     eligibility_status = Column(String(20))
     application_status = Column(String(20))
+    description = Column(Text, nullable=True)
+    eligibility_criteria = Column(Text, nullable=True)
+    course = Column(String(100), nullable=True)
+    department = Column(String(100), nullable=True)
+    min_cgpa = Column(Float, default=0.0)
+    deadline = Column(String(30), nullable=True)
 
     # Relationships
     student = relationship('Student', back_populates='scholarship_records')
@@ -185,7 +191,13 @@ class Scholarship(Base):
             'provider': self.provider,
             'amount': self.amount,
             'eligibility_status': self.eligibility_status,
-            'application_status': self.application_status
+            'application_status': self.application_status,
+            'description': self.description,
+            'eligibility_criteria': self.eligibility_criteria,
+            'course': self.course,
+            'department': self.department,
+            'min_cgpa': self.min_cgpa,
+            'deadline': self.deadline
         }
 
 
@@ -201,6 +213,8 @@ class Internship(Base):
     stipend = Column(Float)
     eligibility = Column(String(200))
     deadline = Column(String(20))
+    skills_required = Column(String(200), nullable=True)
+    description = Column(Text, nullable=True)
 
     def to_dict(self):
         return {
@@ -212,7 +226,9 @@ class Internship(Base):
             'duration': self.duration,
             'stipend': self.stipend,
             'eligibility': self.eligibility,
-            'deadline': self.deadline
+            'deadline': self.deadline,
+            'skills_required': self.skills_required,
+            'description': self.description
         }
 
 

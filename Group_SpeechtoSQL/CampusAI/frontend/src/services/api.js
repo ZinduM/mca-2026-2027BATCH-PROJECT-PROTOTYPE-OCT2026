@@ -53,7 +53,23 @@ export const searchDocuments = (query, top_k = 5) =>
 export const listDocuments = () =>
   api.get('/api/documents').then(r => r.data);
 
-// ── External (Scholarships / Internships) ─────────────────────────────────────
+// ── Information Retrieval Recommendation & Search ─────────────────────────────
+export const getRecommendedScholarships = (studentId, query = '', top_k = 12) =>
+  api.post('/api/recommendations/scholarships', { student_id: studentId, query, top_k }).then(r => r.data);
+
+export const getRecommendedInternships = (studentId, query = '', top_k = 12) =>
+  api.post('/api/recommendations/internships', { student_id: studentId, query, top_k }).then(r => r.data);
+
+export const searchScholarshipsAdmin = (query = '', min_amount = null, top_k = 30) =>
+  api.post('/api/scholarships/search', { query, min_amount, top_k }).then(r => r.data);
+
+export const searchInternshipsAdmin = (query = '', domain = null, top_k = 30) =>
+  api.post('/api/internships/search', { query, domain, top_k }).then(r => r.data);
+
+export const listScholarships = () =>
+  api.get('/api/scholarships').then(r => r.data);
+
+// ── External (Crawled / Knowledge Base) ────────────────────────────────────────
 export const getExternalScholarships = () =>
   api.get('/api/external/scholarships').then(r => r.data);
 

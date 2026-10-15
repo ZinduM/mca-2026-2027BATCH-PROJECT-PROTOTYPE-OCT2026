@@ -10,8 +10,12 @@ It dynamically finds similar queries instead of using
 hardcoded recommendations inside NLP Engine.
 """
 
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
 
 
 class Recommender:
@@ -73,15 +77,17 @@ class Recommender:
         ]
 
 
-        # Convert queries into TF-IDF vectors
-        self.vectorizer = TfidfVectorizer(
-            stop_words="english"
-        )
-
-
-        self.matrix = self.vectorizer.fit_transform(
-            self.queries
-        )
+        if SKLEARN_AVAILABLE:
+            # Convert queries into TF-IDF vectors
+            self.vectorizer = TfidfVectorizer(
+                stop_words="english"
+            )
+            self.matrix = self.vectorizer.fit_transform(
+                self.queries
+            )
+        else:
+            self.vectorizer = None
+            self.matrix = None
 
 
     def recommend(
@@ -94,6 +100,12 @@ class Recommender:
         """
         Find similar queries using cosine similarity.
         """
+        if not SKLEARN_AVAILABLE:
+            q_lower = query.lower()
+            matching = [s for s in self.queries if any(w in s.lower() for w in q_lower.split())]
+            if role == "student":
+                matching = [s for s in matching if "my " in s.lower() or "suggest" in s.lower()]
+            return (matching or self.queries)[:top_k]
 
         query_vector = self.vectorizer.transform(
             [query]

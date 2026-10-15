@@ -21,6 +21,7 @@ from sqlalchemy import func
 
 from backend.database import get_db, execute_raw_sql, get_db_session
 from backend.nlp_engine import nlp_engine
+from backend.recommendation.ir_engine import ir_engine
 from models import Student, Department, AcademicRecord, Attendance, Fee, Scholarship, Internship, Document, Faculty
 
 search_engine = None
@@ -107,7 +108,17 @@ class WebSearchRequest(BaseModel):
 class RecommendRequest(BaseModel):
     student_id: Optional[int] = None
     query: Optional[str] = ""
-    top_k: Optional[int] = 5
+    top_k: Optional[int] = 10
+
+
+class OpportunitySearchRequest(BaseModel):
+    query: Optional[str] = ""
+    student_id: Optional[int] = None
+    min_amount: Optional[float] = None
+    course: Optional[str] = None
+    department: Optional[str] = None
+    domain: Optional[str] = None
+    top_k: Optional[int] = 20
 
 
 # ── Authentication Endpoints ──────────────────────────────────────────────────
@@ -333,32 +344,84 @@ async def process_nlp_query(request: Request):
         }
 
 
-# ── Recommendation Endpoints ──────────────────────────────────────────────────
+# ── Recommendation & Search Endpoints (Information Retrieval Engine) ─────────
+
+@app.post("/api/recommendations/scholarships")
+def recommend_scholarships(request: RecommendRequest):
+    """
+    Recommend scholarships for student using Information Retrieval:
+    - User query + Student profile context (Course, Department, CGPA)
+    - Inverted Index & TF-IDF Vector Space Model
+    - Cosine Similarity & Dynamic Ranking
+    """
+    results = ir_engine.search_scholarships(
+        query=request.query or "",
+        student_id=request.student_id,
+        top_k=request.top_k or 10,
+        is_admin=False
+    )
+    return results
+
+
+@app.post("/api/scholarships/search")
+def search_scholarships_admin(request: OpportunitySearchRequest):
+    """
+    Search complete scholarship database using Information Retrieval (Admin & General).
+    Supports numeric amount filters, course/department filtering, and TF-IDF relevance ranking.
+    """
+    results = ir_engine.search_scholarships(
+        query=request.query or "",
+        student_id=request.student_id,
+        top_k=request.top_k or 50,
+        is_admin=True
+    )
+    return results
+
+
+@app.get("/api/scholarships")
+def list_scholarships():
+    """List distinct scholarships from the ERP database catalogue."""
+    result = execute_raw_sql("""
+        SELECT MIN(scholarship_id) AS scholarship_id, scholarship_name, provider,
+               amount, eligibility_status, application_status, description,
+               eligibility_criteria, course, department, min_cgpa, deadline
+        FROM scholarships
+        GROUP BY scholarship_name
+        ORDER BY amount DESC
+    """)
+    return result
+
 
 @app.post("/api/recommendations/internships")
 def recommend_internships(request: RecommendRequest):
-    """Recommend internships based on student skills/profile using TF-IDF + Cosine Similarity."""
-    db = get_db_session()
-    try:
-        profile_text = request.query or ""
-        if request.student_id:
-            student = db.query(Student).filter(Student.student_id == request.student_id).first()
-            if student:
-                student_dept = db.query(Department).filter(Department.department_id == student.department_id).first()
-                dept_name = student_dept.department_name if student_dept else ""
-                profile_text += f" {student.course or ''} {dept_name}"
+    """
+    Recommend internships for student using Information Retrieval:
+    - Considers MCA course, Department, Passed Subjects / Skills, and Query
+    - TF-IDF Vectorization over job descriptions, domains, and skills
+    - Cosine Similarity in Vector Space Model
+    - Ranked results with match excerpts
+    """
+    results = ir_engine.search_internships(
+        query=request.query or "",
+        student_id=request.student_id,
+        top_k=request.top_k or 10,
+        is_admin=False
+    )
+    return results
 
-        internships_res = execute_raw_sql("SELECT internship_id, title, company_name, description, stipend, location FROM internships")
-        internships = internships_res if isinstance(internships_res, list) else (internships_res.get("data", []) if isinstance(internships_res, dict) else [])
 
-        scored_internships = nlp_engine.recommender.match_opportunities(
-            student_profile=profile_text.strip(),
-            items=internships,
-            field="title"
-        )
-        return {"results": scored_internships[:request.top_k]}
-    finally:
-        db.close()
+@app.post("/api/internships/search")
+def search_internships_admin(request: OpportunitySearchRequest):
+    """
+    Search complete internship opportunities using Information Retrieval.
+    """
+    results = ir_engine.search_internships(
+        query=request.query or "",
+        student_id=request.student_id,
+        top_k=request.top_k or 50,
+        is_admin=True
+    )
+    return results
 
 
 @app.post("/api/recommendations/queries")
@@ -442,12 +505,14 @@ def get_student_fees(student_id: int):
 
 @app.get("/api/student/{student_id}/scholarships")
 def get_student_scholarships(student_id: int):
-    """Get student's scholarship information."""
+    """Get student's scholarship applications/records."""
     result = execute_raw_sql(f"""
-        SELECT sc.scholarship_name, sc.provider, sc.amount,
-               sc.eligibility_status, sc.application_status
+        SELECT sc.scholarship_id, sc.scholarship_name, sc.provider, sc.amount,
+               sc.eligibility_status, sc.application_status, sc.deadline,
+               sc.description, sc.eligibility_criteria, sc.course, sc.min_cgpa
         FROM scholarships sc
         WHERE sc.student_id = {student_id}
+        ORDER BY sc.amount DESC
     """)
     return result
 
@@ -614,7 +679,12 @@ def list_departments():
 @app.get("/api/internships")
 def list_internships():
     """List all internship opportunities."""
-    result = execute_raw_sql("SELECT * FROM internships ORDER BY stipend DESC")
+    result = execute_raw_sql("""
+        SELECT internship_id, company_name, domain, role, location,
+               duration, stipend, eligibility, deadline, skills_required, description
+        FROM internships
+        ORDER BY stipend DESC
+    """)
     return result
 
 
